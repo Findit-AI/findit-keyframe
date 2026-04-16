@@ -35,6 +35,7 @@ from findit_keyframe.types import (
 
 if TYPE_CHECKING:
     from findit_keyframe.decoder import DecodedFrame
+    from findit_keyframe.saliency import SaliencyProvider
 
 
 __all__ = [
@@ -139,9 +140,19 @@ def score_bin_candidates(metrics_list: list[QualityMetrics]) -> list[float]:
 # --------------------------------------------------------------------------- #
 
 
+def _compute_metrics(
+    candidates: list[DecodedFrame],
+    saliency_provider: SaliencyProvider | None,
+) -> list[QualityMetrics]:
+    if saliency_provider is None:
+        return [compute_quality(c.rgb) for c in candidates]
+    return [compute_quality(c.rgb, saliency=saliency_provider.compute(c.rgb)) for c in candidates]
+
+
 def select_from_bin(
     candidates: list[DecodedFrame],
     quality_gate: QualityGate,
+    saliency_provider: SaliencyProvider | None = None,
 ) -> tuple[DecodedFrame, QualityMetrics, Confidence] | None:
     """Apply the gate, score survivors, return the highest-scoring one.
 
@@ -151,7 +162,7 @@ def select_from_bin(
     """
     if not candidates:
         return None
-    metrics = [compute_quality(c.rgb) for c in candidates]
+    metrics = _compute_metrics(candidates, saliency_provider)
     survivors = [(f, m) for f, m in zip(candidates, metrics, strict=True) if quality_gate.passes(m)]
     if not survivors:
         return None
@@ -169,25 +180,26 @@ def _select_with_fallback(
     decoder: VideoDecoder,
     config: SamplingConfig,
     quality_gate: QualityGate,
+    saliency_provider: SaliencyProvider | None = None,
 ) -> tuple[DecodedFrame, QualityMetrics, Confidence]:
     """Native bin -> expanded window -> force-pick. Always returns a frame."""
     t0, t1 = bins[bin_idx]
     bin_width = t1 - t0
 
     native = [decoder.decode_at(t) for t in _candidate_times(t0, t1, config.candidates_per_bin)]
-    if (result := select_from_bin(native, quality_gate)) is not None:
+    if (result := select_from_bin(native, quality_gate, saliency_provider)) is not None:
         return result
 
     expand = config.fallback_expand_pct * bin_width
     et0 = max(shot.start.seconds, t0 - expand)
     et1 = min(shot.end.seconds, t1 + expand)
     expanded = [decoder.decode_at(t) for t in _candidate_times(et0, et1, config.candidates_per_bin)]
-    if (result := select_from_bin(expanded, quality_gate)) is not None:
+    if (result := select_from_bin(expanded, quality_gate, saliency_provider)) is not None:
         frame, metrics, _ = result
         return frame, metrics, Confidence.Low
 
     pool = native + expanded
-    metrics_pool = [compute_quality(c.rgb) for c in pool]
+    metrics_pool = _compute_metrics(pool, saliency_provider)
     scores = score_bin_candidates(metrics_pool)
     best = int(np.argmax(scores))
     return pool[best], metrics_pool[best], Confidence.Degraded
@@ -204,13 +216,16 @@ def extract_for_shot(
     decoder: VideoDecoder,
     config: SamplingConfig,
     quality_gate: QualityGate | None = None,
+    saliency_provider: SaliencyProvider | None = None,
 ) -> list[ExtractedKeyframe]:
     """Extract one keyframe per bin for a single shot."""
     bins = compute_bins(shot, config)
     gate = quality_gate or QualityGate()
     out: list[ExtractedKeyframe] = []
     for i in range(len(bins)):
-        frame, metrics, confidence = _select_with_fallback(i, bins, shot, decoder, config, gate)
+        frame, metrics, confidence = _select_with_fallback(
+            i, bins, shot, decoder, config, gate, saliency_provider
+        )
         out.append(
             ExtractedKeyframe(
                 shot_id=shot_id,
@@ -231,6 +246,7 @@ def extract_all(
     decoder: VideoDecoder,
     config: SamplingConfig,
     quality_gate: QualityGate | None = None,
+    saliency_provider: SaliencyProvider | None = None,
 ) -> list[list[ExtractedKeyframe]]:
     """Extract keyframes for every shot in ``shots``.
 
@@ -241,6 +257,6 @@ def extract_all(
     """
     _ = pick_strategy(shots, decoder.duration_sec)
     return [
-        extract_for_shot(shot, shot_id, decoder, config, quality_gate)
+        extract_for_shot(shot, shot_id, decoder, config, quality_gate, saliency_provider)
         for shot_id, shot in enumerate(shots)
     ]

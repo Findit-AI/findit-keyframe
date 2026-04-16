@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import platform
 import sys
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,8 @@ from findit_keyframe.cli import _parse_config_json, _parse_shot_json, main
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+_IS_DARWIN = platform.system() == "Darwin"
 
 
 def _write_shots_json(path: Path, shots: list[dict]) -> None:
@@ -303,7 +306,8 @@ class TestExitCodes:
         )
         assert main() == 2
 
-    def test_saliency_apple_stub_returns_input_error(
+    @pytest.mark.skipif(_IS_DARWIN, reason="Apple Vision is available on macOS")
+    def test_saliency_apple_off_macos_returns_input_error(
         self, tmp_path: Path, varied_video: Path, monkeypatch: pytest.MonkeyPatch
     ):
         shots = tmp_path / "shots.json"
@@ -324,6 +328,42 @@ class TestExitCodes:
                 "apple",
             ],
         )
-        # T6 (Apple Vision saliency) lands in P4; until then the CLI rejects
-        # the choice with a clear message rather than silently dropping it.
+        # AppleVisionSaliencyProvider.__init__ raises RuntimeError off-Darwin;
+        # the CLI maps that to the input-error exit code.
         assert main() == 1
+
+
+@pytest.mark.skipif(not _IS_DARWIN, reason="Apple Vision is macOS-only")
+@pytest.mark.macos
+class TestCliSaliencyApple:
+    def test_extract_with_apple_saliency_succeeds(
+        self, tmp_path: Path, varied_video: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        shots = tmp_path / "shots.json"
+        _write_shots_json(
+            shots,
+            [
+                {"id": 0, "start_pts": 0, "end_pts": 500, "timebase_num": 1, "timebase_den": 1000},
+            ],
+        )
+        out_dir = tmp_path / "out"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "findit-keyframe",
+                "extract",
+                str(varied_video),
+                str(shots),
+                str(out_dir),
+                "--saliency",
+                "apple",
+            ],
+        )
+        rc = main()
+        assert rc == 0
+
+        manifest = json.loads((out_dir / "manifest.json").read_text())
+        # Saliency is in [0, 1]; non-negative is the meaningful contract.
+        for entry in manifest["keyframes"]:
+            assert 0.0 <= entry["quality"]["saliency_mass"] <= 1.0

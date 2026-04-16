@@ -20,7 +20,7 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import av
 import numpy as np
@@ -34,6 +34,9 @@ from findit_keyframe.types import (
     Timebase,
     Timestamp,
 )
+
+if TYPE_CHECKING:
+    from findit_keyframe.saliency import SaliencyProvider
 
 __all__ = ["main"]
 
@@ -174,7 +177,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--saliency",
         choices=["none", "apple"],
         default="none",
-        help="Saliency provider. 'apple' lands in P4 (T6); 'none' is the only working option.",
+        help="Saliency provider. 'apple' uses Apple Vision (macOS, requires the .[macos] extra).",
     )
     return parser
 
@@ -184,21 +187,29 @@ def _build_parser() -> argparse.ArgumentParser:
 # --------------------------------------------------------------------------- #
 
 
+def _build_saliency_provider(name: str) -> SaliencyProvider | None:
+    """Map ``--saliency`` choice to a provider instance (or ``None`` for off)."""
+    if name == "none":
+        return None
+    if name == "apple":
+        from findit_keyframe.saliency import AppleVisionSaliencyProvider
+
+        return AppleVisionSaliencyProvider()
+    raise ValueError(f"unknown saliency provider: {name!r}")
+
+
 def _extract_command(args: argparse.Namespace) -> int:
     try:
         shots = _parse_shot_json(args.shots)
         config = _parse_config_json(args.config)
-    except (KeyError, ValueError, json.JSONDecodeError, FileNotFoundError) as exc:
+        saliency = _build_saliency_provider(args.saliency)
+    except (KeyError, ValueError, RuntimeError, json.JSONDecodeError, FileNotFoundError) as exc:
         print(f"error: invalid input: {exc}", file=sys.stderr)
-        return EXIT_INPUT_ERROR
-
-    if args.saliency == "apple":
-        print("error: --saliency apple is not yet implemented (T6 ships in P4)", file=sys.stderr)
         return EXIT_INPUT_ERROR
 
     try:
         with VideoDecoder.open(args.video, target_size=config.target_size) as decoder:
-            keyframes = extract_all(shots, decoder, config)
+            keyframes = extract_all(shots, decoder, config, saliency_provider=saliency)
         manifest_path = _write_outputs(args.video, args.output, keyframes)
     except Exception as exc:
         print(f"error: extraction failed: {exc}", file=sys.stderr)

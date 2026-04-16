@@ -14,6 +14,12 @@ from findit_keyframe.decoder import (
     pick_strategy,
 )
 from findit_keyframe.quality import QualityGate, compute_quality
+from findit_keyframe.saliency import (
+    AppleVisionSaliencyProvider,
+    NoopSaliencyProvider,
+    SaliencyProvider,
+    default_saliency_provider,
+)
 from findit_keyframe.sampler import extract_all, extract_for_shot
 from findit_keyframe.types import (
     Confidence,
@@ -28,11 +34,14 @@ from findit_keyframe.types import (
 __version__ = "0.0.0"
 
 __all__ = [
+    "AppleVisionSaliencyProvider",
     "Confidence",
     "DecodedFrame",
     "ExtractedKeyframe",
+    "NoopSaliencyProvider",
     "QualityGate",
     "QualityMetrics",
+    "SaliencyProvider",
     "SamplingConfig",
     "ShotRange",
     "Strategy",
@@ -41,6 +50,7 @@ __all__ = [
     "VideoDecoder",
     "__version__",
     "compute_quality",
+    "default_saliency_provider",
     "extract_all",
     "extract_for_shot",
     "pick_strategy",
