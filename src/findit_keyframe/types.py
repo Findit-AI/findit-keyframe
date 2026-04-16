@@ -211,9 +211,9 @@ class Confidence(enum.StrEnum):
 class SamplingConfig:
     """User-tunable knobs controlling stratified temporal sampling.
 
-    Defaults are documented in ``docs/algorithm.md`` §6 and chosen for
-    24-60 fps source video where each shot is between roughly 0.5 s and
-    several minutes long.
+    Defaults are documented in ``docs/algorithm.md`` §7 ("Parameter
+    Rationale") and chosen for 24-60 fps source video where each shot is
+    between roughly 0.5 s and several minutes long.
     """
 
     target_interval_sec: float = 4.0
@@ -241,8 +241,12 @@ class QualityMetrics:
     * ``luma_variance`` — sample variance of luma values (raw, on the 0-255
       integer scale before normalisation).
     * ``entropy`` — Shannon entropy in bits of the 256-bin luma histogram.
-    * ``saliency_mass`` — sum of an Apple Vision attention heatmap in
-      ``[0.0, 1.0]``; ``0.0`` when no saliency provider is configured.
+    * ``saliency_mass`` — Apple Vision attention score in ``[0.0, 1.0]``;
+      ``0.0`` when no saliency provider is configured. The bundled
+      :class:`findit_keyframe.saliency.AppleVisionSaliencyProvider` derives
+      this as ``clamp(sum(area * confidence), 0, 1)`` over the request's
+      ``salientObjects`` bounding boxes, *not* from the heatmap
+      ``CVPixelBuffer`` — see that module's docstring for rationale.
     """
 
     laplacian_var: float

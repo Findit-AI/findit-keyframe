@@ -6,7 +6,7 @@ Subcommands:
   one keyframe per bin per shot, write each keyframe as a baseline JPEG and
   emit ``manifest.json`` describing all outputs.
 
-Exit codes (per ``TASKS.md`` §7):
+Exit codes (per ``TASKS.md`` §3 → Task 7):
 
 * ``0`` — success.
 * ``1`` — input error (bad JSON, unknown config field, unsupported flag).

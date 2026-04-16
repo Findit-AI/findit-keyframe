@@ -370,7 +370,7 @@ Across all tasks, these must hold:
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| PyAV API quirks on macOS (FFmpeg 7.x) | Medium | Medium | Pin `av>=12.0,<13.0`; test on real Kino Demo early |
+| PyAV API quirks on macOS (FFmpeg 7.x) | Medium | Medium | Pin `av>=13.0,<14.0` — PyAV 13's exception hierarchy (`av.error.FFmpegError` as a common base inheriting from both `OSError` and `ValueError`) is what the CLI's narrowed `except` clause relies on; test on real Kino Demo early |
 | Apple Vision pyobjc behavior differs from objc2-vision | Low | Low | Document saliency is "signal only"; Rust may tune independently |
 | Numpy precision differs from Rust ndarray (rare but real) | Low | Medium | Golden fixtures at 6-decimal precision with tolerance |
 | Shot edge cases: zero-duration, overlapping, negative | Medium | High | Validate inputs strictly; unit tests for pathological shots |
