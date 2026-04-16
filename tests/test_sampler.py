@@ -46,6 +46,11 @@ def _shot(start_sec: float, end_sec: float) -> ShotRange:
     )
 
 
+def _ts(seconds: float, tb: Timebase) -> Timestamp:
+    """Build a Timestamp for ``seconds`` in the given decoder timebase."""
+    return Timestamp(round(seconds * tb.den / tb.num), tb)
+
+
 def _qm(**overrides: float) -> QualityMetrics:
     defaults = {
         "laplacian_var": 100.0,
@@ -297,6 +302,74 @@ class TestExtractForShotFallback:
 # --------------------------------------------------------------------------- #
 # extract_all                                                                 #
 # --------------------------------------------------------------------------- #
+
+
+class TestQualityGradient:
+    """T5 verification: sharp regions must win in mixed-content bins.
+
+    The 20-second ``quality_gradient_video`` fixture is structured as
+    sharp / blur / sharp thirds at 15 fps, so the boundaries between
+    regions are at ``t = 100/15`` s and ``t = 200/15`` s. With
+    ``SamplingConfig`` defaults (``target_interval_sec = 4``,
+    ``boundary_shrink_pct = 0.02``), the shot is split into 5 bins of
+    equal width over the shrunken range ``[0.4, 19.6]``:
+
+    * Bin 0 ``[0.40, 4.24)`` — entirely sharp
+    * Bin 1 ``[4.24, 8.08)`` — mostly sharp + tail blur
+    * Bin 2 ``[8.08, 11.92)`` — entirely blur
+    * Bin 3 ``[11.92, 15.76)`` — head blur + tail sharp
+    * Bin 4 ``[15.76, 19.60]`` — entirely sharp
+
+    Bins 1 and 3 are the load-bearing tests: the within-bin scorer must
+    pick a sharp candidate timestamp, not a blurred one.
+    """
+
+    SHARP_END_1 = 100 / 15  # ~6.667 s
+    BLUR_END = 200 / 15  # ~13.333 s
+
+    def test_sampler_prefers_sharp_in_mixed_bins(self, quality_gradient_video: Path):
+        with VideoDecoder.open(quality_gradient_video, target_size=64) as dec:
+            shot = ShotRange(
+                start=Timestamp(0, dec.timebase),
+                end=_ts(20.0, dec.timebase),
+            )
+            keyframes = extract_for_shot(shot, 0, dec, SamplingConfig())
+
+        # ceil(20 / 4) = 5 bins, exactly one keyframe each.
+        assert len(keyframes) == 5
+        assert [kf.bucket_index for kf in keyframes] == [0, 1, 2, 3, 4]
+
+        ts = [kf.timestamp.seconds for kf in keyframes]
+        # Bin 0: entirely sharp; selected ts must be in the first sharp third.
+        assert ts[0] < self.SHARP_END_1, f"bin 0 ts={ts[0]:.3f}s outside sharp third"
+        # Bin 1: mostly sharp; the scorer must reject the tail blur candidates.
+        assert ts[1] < self.SHARP_END_1, f"bin 1 ts={ts[1]:.3f}s in blur region"
+        # Bin 2: entirely blur — sampler picks something here, no preference assertion.
+        assert self.SHARP_END_1 <= ts[2] < self.BLUR_END
+        # Bin 3: head blur + tail sharp; the scorer must reach into the sharp tail.
+        assert ts[3] > self.BLUR_END, f"bin 3 ts={ts[3]:.3f}s in blur region"
+        # Bin 4: entirely sharp.
+        assert ts[4] > self.BLUR_END, f"bin 4 ts={ts[4]:.3f}s outside sharp third"
+
+    def test_sharp_bins_have_higher_laplacian_than_blur_bin(self, quality_gradient_video: Path):
+        with VideoDecoder.open(quality_gradient_video, target_size=64) as dec:
+            shot = ShotRange(
+                start=Timestamp(0, dec.timebase),
+                end=_ts(20.0, dec.timebase),
+            )
+            keyframes = extract_for_shot(shot, 0, dec, SamplingConfig())
+        # The all-blur bin's Laplacian variance is bounded above by both
+        # sharp-only bins (0 and 4). This corroborates that the box-blur
+        # roundtrip survives libx264 encoding measurably.
+        blur_lap = keyframes[2].quality.laplacian_var
+        sharp0_lap = keyframes[0].quality.laplacian_var
+        sharp4_lap = keyframes[4].quality.laplacian_var
+        assert blur_lap < sharp0_lap, (
+            f"blur bin laplacian {blur_lap:.1f} not below sharp bin 0 {sharp0_lap:.1f}"
+        )
+        assert blur_lap < sharp4_lap, (
+            f"blur bin laplacian {blur_lap:.1f} not below sharp bin 4 {sharp4_lap:.1f}"
+        )
 
 
 class TestExtractAll:

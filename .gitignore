@@ -74,3 +74,4 @@ benchmarks/.cache/
 *.mkv
 *.webm
 !tests/fixtures/**/*.mp4
+.claude/
