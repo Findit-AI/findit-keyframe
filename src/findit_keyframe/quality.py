@@ -29,10 +29,22 @@ RgbArray = npt.NDArray[np.uint8]
 
 
 def rgb_to_luma(rgb: RgbArray) -> LumaArray:
-    """BT.601 limited-range fixed-point luma (``Y in [16, 235]``).
+    """Convert packed RGB24 to BT.601 limited-range luma (``Y ∈ [16, 235]``).
 
-    Formula: ``((66*R + 129*G + 25*B + 128) >> 8) + 16``. Identical to
-    scenesdetect's choice so a Y-plane round-trip is bit-exact across crates.
+    Formula: ``((66*R + 129*G + 25*B + 128) >> 8) + 16``. The integer
+    fixed-point form is identical to scenesdetect's so a Y-plane round-trip
+    is bit-exact across crates.
+
+    Args:
+        rgb: Array of shape ``(H, W, 3)`` and dtype ``uint8``. Channel
+            order is RGB.
+
+    Returns:
+        Array of shape ``(H, W)`` and dtype ``uint8`` carrying the luma plane.
+
+    Raises:
+        ValueError: If ``rgb`` is not ``uint8`` or its shape is not
+            ``(H, W, 3)``.
     """
     if rgb.dtype != np.uint8:
         raise ValueError(f"rgb must be uint8, got {rgb.dtype}")
@@ -46,11 +58,21 @@ def rgb_to_luma(rgb: RgbArray) -> LumaArray:
 
 
 def laplacian_variance(luma: LumaArray) -> float:
-    """Variance of a 3x3 Laplacian-filtered luma image. Sharpness proxy.
+    """Variance of a 3x3 Laplacian-filtered luma image; a sharpness proxy.
 
-    Kernel ``[[0, 1, 0], [1, -4, 1], [0, 1, 0]]``. One-pixel border is dropped.
-    Variance uses the population denominator (N) to match OpenCV's
-    ``meanStdDev(Laplacian(...))``.
+    Kernel ``[[0, 1, 0], [1, -4, 1], [0, 1, 0]]``. The one-pixel border is
+    dropped (no padding). Variance uses the population denominator (``N``)
+    to match OpenCV's ``meanStdDev(Laplacian(...))``.
+
+    Args:
+        luma: Single-plane luma array, dtype ``uint8``.
+
+    Returns:
+        Population variance of the filtered interior pixels, as a Python
+        ``float``. Higher values mean sharper content.
+
+    Raises:
+        ValueError: If ``luma`` is not 2-D or smaller than ``3x3``.
     """
     if luma.ndim != 2:
         raise ValueError(f"luma must be 2D, got shape {luma.shape}")
@@ -62,17 +84,44 @@ def laplacian_variance(luma: LumaArray) -> float:
 
 
 def mean_luma(luma: LumaArray) -> float:
-    """Mean luma normalised to ``[0.0, 1.0]``."""
+    """Compute the arithmetic mean of luma values normalised to ``[0.0, 1.0]``.
+
+    Args:
+        luma: Single-plane luma array on the 0-255 scale.
+
+    Returns:
+        ``float(luma.mean()) / 255.0``.
+    """
     return float(luma.mean()) / 255.0
 
 
 def luma_variance(luma: LumaArray) -> float:
-    """Sample variance (ddof=1) of luma values on the raw 0-255 scale."""
+    """Compute the sample variance (``ddof=1``) of luma on the raw 0-255 scale.
+
+    Args:
+        luma: Single-plane luma array on the 0-255 scale.
+
+    Returns:
+        Sample variance with Bessel's correction. Pixel-flat frames return
+        ``0.0``.
+    """
     return float(luma.var(ddof=1))
 
 
 def entropy(luma: LumaArray, bins: int = 256) -> float:
-    """Shannon entropy in bits of a ``bins``-bin luma histogram over ``[0, 256)``."""
+    """Compute the Shannon entropy in bits of a ``bins``-bin luma histogram.
+
+    Histogram range is fixed to ``[0, 256)`` (i.e. one bin per integer level
+    when ``bins == 256``), making the function input-only deterministic.
+
+    Args:
+        luma: Single-plane luma array on the 0-255 scale.
+        bins: Number of histogram bins. Defaults to ``256``.
+
+    Returns:
+        ``-Σ p_i * log2(p_i)`` over non-zero probabilities. Range is
+        ``[0, log2(bins)]``; ``0.0`` for delta distributions and empty input.
+    """
     counts, _ = np.histogram(luma, bins=bins, range=(0, 256))
     total = counts.sum()
     if total == 0:
@@ -96,6 +145,16 @@ class QualityGate:
     min_luma_variance: float = 5.0
 
     def passes(self, metrics: QualityMetrics) -> bool:
+        """Return ``True`` when ``metrics`` clears every threshold (boundaries inclusive).
+
+        Args:
+            metrics: Per-frame metrics produced by :func:`compute_quality`.
+
+        Returns:
+            ``True`` iff ``mean_luma`` lies inclusively in
+            ``[min_mean_luma, max_mean_luma]`` *and* ``luma_variance ≥
+            min_luma_variance``.
+        """
         return (
             self.min_mean_luma <= metrics.mean_luma <= self.max_mean_luma
             and metrics.luma_variance >= self.min_luma_variance
@@ -105,8 +164,18 @@ class QualityGate:
 def compute_quality(rgb: RgbArray, saliency: float | None = None) -> QualityMetrics:
     """Compute all per-frame quality signals from a packed RGB24 array.
 
-    ``saliency`` is the optional Apple Vision attention mass for this frame.
-    When ``None``, ``QualityMetrics.saliency_mass`` is reported as ``0.0``.
+    Args:
+        rgb: Array of shape ``(H, W, 3)`` and dtype ``uint8``; channel order RGB.
+        saliency: Optional saliency mass in ``[0.0, 1.0]`` for this frame.
+            ``None`` (the default) records ``0.0`` so frames extracted
+            without a saliency provider remain comparable.
+
+    Returns:
+        A :class:`QualityMetrics` populated with all five signals.
+
+    Raises:
+        ValueError: Propagated from :func:`rgb_to_luma` when the input has
+            the wrong shape or dtype.
     """
     luma = rgb_to_luma(rgb)
     return QualityMetrics(

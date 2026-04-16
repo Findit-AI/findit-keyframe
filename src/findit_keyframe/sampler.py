@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from findit_keyframe.decoder import VideoDecoder, pick_strategy
 from findit_keyframe.quality import QualityGate, compute_quality
 from findit_keyframe.types import (
     Confidence,
@@ -34,7 +33,7 @@ from findit_keyframe.types import (
 )
 
 if TYPE_CHECKING:
-    from findit_keyframe.decoder import DecodedFrame
+    from findit_keyframe.decoder import DecodedFrame, VideoDecoder
     from findit_keyframe.saliency import SaliencyProvider
 
 
@@ -59,6 +58,17 @@ def compute_bins(shot: ShotRange, config: SamplingConfig) -> list[tuple[float, f
     ``D = shot.duration_sec``. The shrunken effective range is
     ``[start + s, end - s]`` with ``s = boundary_shrink_pct * D``; bins divide
     this range evenly and are returned as ``(t0, t1)`` half-open intervals.
+
+    Args:
+        shot: The shot to partition. ``shot.duration_sec > 0`` is required
+            by :class:`ShotRange`'s constructor; this function additionally
+            handles a defensive ``<= 0`` case by returning an empty list.
+        config: Sampling parameters; ``target_interval_sec``,
+            ``max_frames_per_shot``, and ``boundary_shrink_pct`` are read.
+
+    Returns:
+        A list of ``(t0, t1)`` second-valued tuples, all of equal width
+        and contiguous (``bins[i].t1 == bins[i+1].t0``).
     """
     duration = shot.duration_sec
     if duration <= 0.0:
@@ -117,11 +127,20 @@ def _ordinal_rank(values: list[float]) -> list[float]:
 
 
 def score_bin_candidates(metrics_list: list[QualityMetrics]) -> list[float]:
-    """Composite quality score for each candidate in a bin.
+    """Compute the composite quality score for each candidate in a bin.
 
-    ``score = 0.6 * rank(laplacian_var) + 0.2 * rank(entropy) + 0.2 * saliency_mass``.
-    Single-candidate bins return the maximum possible quality contribution
-    (rank = 1) plus their saliency.
+    Formula: ``score = 0.6 * rank(laplacian_var) + 0.2 * rank(entropy) +
+    0.2 * saliency_mass``. ``rank`` is the stable ordinal rank within the
+    bin's pool, scaled to ``[0, 1]``. Single-candidate bins use ``rank = 1``
+    for both quality terms, so the score collapses to ``0.8 + 0.2 *
+    saliency_mass``.
+
+    Args:
+        metrics_list: Per-candidate quality metrics, in candidate order.
+
+    Returns:
+        A parallel list of float scores in candidate order. Empty input
+        returns an empty list.
     """
     if not metrics_list:
         return []
@@ -156,9 +175,17 @@ def select_from_bin(
 ) -> tuple[DecodedFrame, QualityMetrics, Confidence] | None:
     """Apply the gate, score survivors, return the highest-scoring one.
 
-    Returns ``None`` when every candidate fails the hard gate. The returned
-    ``Confidence`` is always ``High`` here; the fallback path wraps it to
-    ``Low`` or ``Degraded`` as appropriate.
+    Args:
+        candidates: Decoded candidate frames for this bin. Empty input
+            returns ``None``.
+        quality_gate: Hard pass/fail predicate applied to each candidate.
+        saliency_provider: Optional saliency contributor to the composite
+            score; ``None`` skips the per-frame saliency call entirely.
+
+    Returns:
+        ``(frame, metrics, Confidence.High)`` for the winning candidate, or
+        ``None`` when every candidate fails the gate. The fallback path
+        wraps the confidence to ``Low`` or ``Degraded`` as appropriate.
     """
     if not candidates:
         return None
@@ -182,20 +209,39 @@ def _select_with_fallback(
     quality_gate: QualityGate,
     saliency_provider: SaliencyProvider | None = None,
 ) -> tuple[DecodedFrame, QualityMetrics, Confidence]:
-    """Native bin -> expanded window -> force-pick. Always returns a frame."""
+    """Try the native bin, then an expanded window, then force-pick.
+
+    Always returns a frame; the caller never has to handle ``None``.
+
+    Args:
+        bin_idx: Index of the bin to fill, in ``[0, len(bins))``.
+        bins: Output of :func:`compute_bins` for the same shot.
+        shot: The parent shot; used to clamp the expanded window.
+        decoder: Decoder for fetching candidate frames.
+        config: Sampling parameters (probe count, fallback expansion, ...).
+        quality_gate: Hard pass/fail predicate.
+        saliency_provider: Optional saliency contributor; ``None`` skips it.
+
+    Returns:
+        ``(frame, metrics, confidence)`` for the bin's selected keyframe.
+        The confidence ladder is ``High`` (native pool) → ``Low`` (expanded
+        pool) → ``Degraded`` (force-picked from a gate-failing pool).
+    """
     t0, t1 = bins[bin_idx]
     bin_width = t1 - t0
 
     native = [decoder.decode_at(t) for t in _candidate_times(t0, t1, config.candidates_per_bin)]
-    if (result := select_from_bin(native, quality_gate, saliency_provider)) is not None:
-        return result
+    native_pick = select_from_bin(native, quality_gate, saliency_provider)
+    if native_pick is not None:
+        return native_pick
 
     expand = config.fallback_expand_pct * bin_width
     et0 = max(shot.start.seconds, t0 - expand)
     et1 = min(shot.end.seconds, t1 + expand)
     expanded = [decoder.decode_at(t) for t in _candidate_times(et0, et1, config.candidates_per_bin)]
-    if (result := select_from_bin(expanded, quality_gate, saliency_provider)) is not None:
-        frame, metrics, _ = result
+    expanded_pick = select_from_bin(expanded, quality_gate, saliency_provider)
+    if expanded_pick is not None:
+        frame, metrics, _ = expanded_pick
         return frame, metrics, Confidence.Low
 
     pool = native + expanded
@@ -218,7 +264,30 @@ def extract_for_shot(
     quality_gate: QualityGate | None = None,
     saliency_provider: SaliencyProvider | None = None,
 ) -> list[ExtractedKeyframe]:
-    """Extract one keyframe per bin for a single shot."""
+    """Extract one keyframe per bin for a single shot.
+
+    Args:
+        shot: The shot to process.
+        shot_id: Identifier copied verbatim into every emitted
+            :class:`ExtractedKeyframe`. The caller chooses the numbering
+            scheme; :func:`extract_all` uses input-list index.
+        decoder: An open :class:`VideoDecoder` covering ``shot``.
+        config: Sampling parameters.
+        quality_gate: Optional override; defaults to :class:`QualityGate()`.
+        saliency_provider: Optional saliency contributor; ``None`` means
+            ``saliency_mass = 0``.
+
+    Returns:
+        Exactly ``len(compute_bins(shot, config))`` keyframes (one per bin),
+        each tagged with the bin's ``bucket_index`` and a
+        :class:`Confidence`. The ``rgb`` buffer is materialised as ``bytes``
+        so the result is safely serialisable.
+
+    Raises:
+        ValueError: Propagated from :meth:`VideoDecoder.decode_at` when a
+            probe falls past the end of the stream (typically a malformed
+            shot whose end exceeds the decoder's duration).
+    """
     bins = compute_bins(shot, config)
     gate = quality_gate or QualityGate()
     out: list[ExtractedKeyframe] = []
@@ -250,12 +319,24 @@ def extract_all(
 ) -> list[list[ExtractedKeyframe]]:
     """Extract keyframes for every shot in ``shots``.
 
-    The return shape mirrors the input: one ``list[ExtractedKeyframe]`` per
-    shot, in input order. ``pick_strategy`` is consulted for telemetry but
-    P2 always uses the per-shot seek path; the dense-shot Sequential
-    optimisation lands in P3.
+    Per-shot extraction goes through :func:`extract_for_shot`; this function
+    is only an iteration shell. The decoder's per-shot-seek path is the only
+    one currently implemented — see :class:`findit_keyframe.decoder.Strategy`
+    and :func:`findit_keyframe.decoder.pick_strategy` for the dense-shot
+    Sequential optimisation tracked for the Rust port.
+
+    Args:
+        shots: Input shot list, in any order. The output preserves input order.
+        decoder: An open :class:`VideoDecoder` covering the same video.
+        config: Sampling parameters applied to every shot.
+        quality_gate: Optional override; defaults to :class:`QualityGate()`.
+        saliency_provider: Optional saliency contributor; ``None`` means
+            ``saliency_mass = 0`` for every keyframe.
+
+    Returns:
+        A list with one entry per input shot, each entry a list of
+        :class:`ExtractedKeyframe` (one per bin in that shot).
     """
-    _ = pick_strategy(shots, decoder.duration_sec)
     return [
         extract_for_shot(shot, shot_id, decoder, config, quality_gate, saliency_provider)
         for shot_id, shot in enumerate(shots)

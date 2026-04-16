@@ -51,7 +51,23 @@ EXIT_EXTRACTION_ERROR = 2
 
 
 def _parse_shot_json(path: Path) -> list[ShotRange]:
-    """Read a scenesdetect-compatible shot JSON file into a ``ShotRange`` list."""
+    """Read a scenesdetect-compatible shot JSON file into a ``ShotRange`` list.
+
+    Args:
+        path: Filesystem path to a JSON file with a top-level ``shots``
+            array. Each entry must have keys ``start_pts``, ``end_pts``,
+            ``timebase_num``, ``timebase_den``.
+
+    Returns:
+        A list of :class:`ShotRange`, in input order.
+
+    Raises:
+        FileNotFoundError: If ``path`` doesn't exist.
+        json.JSONDecodeError: If the file is not valid JSON.
+        KeyError: If the top-level ``shots`` key or any required entry
+            field is missing.
+        ValueError: If any shot has ``end <= start`` (per :class:`ShotRange`).
+    """
     data: dict[str, Any] = json.loads(path.read_text())
     shots: list[ShotRange] = []
     for entry in data["shots"]:
@@ -66,10 +82,23 @@ def _parse_shot_json(path: Path) -> list[ShotRange]:
 
 
 def _parse_config_json(path: Path | None) -> SamplingConfig:
-    """Apply optional JSON overrides to a default ``SamplingConfig``.
+    """Apply optional JSON overrides to a default :class:`SamplingConfig`.
 
-    Unknown fields raise ``ValueError`` so typos surface immediately rather
-    than silently no-op.
+    Unknown fields raise :class:`ValueError` so typos surface immediately
+    rather than silently no-op-ing.
+
+    Args:
+        path: Optional path to a JSON object whose keys are
+            :class:`SamplingConfig` field names. ``None`` returns defaults.
+
+    Returns:
+        A fresh :class:`SamplingConfig` with overrides applied.
+
+    Raises:
+        FileNotFoundError: If ``path`` is given but does not exist.
+        json.JSONDecodeError: If the file is not valid JSON.
+        ValueError: If the JSON contains a key that is not a
+            :class:`SamplingConfig` field.
     """
     config = SamplingConfig()
     if path is None:
@@ -94,6 +123,17 @@ def _write_jpeg(path: Path, rgb_bytes: bytes, width: int, height: int) -> None:
     ``yuvj420p`` (full-range YUV) is the standard JPEG sampling; the
     ``image2`` muxer writes a single-frame JPEG file rather than an MJPEG
     container.
+
+    Args:
+        path: Output filesystem path. Parent directories must already exist.
+        rgb_bytes: Packed RGB24 bytes of length ``width * height * 3``.
+        width: Frame width in pixels.
+        height: Frame height in pixels.
+
+    Raises:
+        av.error.FFmpegError: If FFmpeg cannot write the file (permissions,
+            disk full, unsupported pixel format, ...).
+        OSError: From the underlying file open.
     """
     rgb = np.frombuffer(rgb_bytes, dtype=np.uint8).reshape(height, width, 3)
     container = av.open(str(path), mode="w", format="image2")
@@ -188,7 +228,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _build_saliency_provider(name: str) -> SaliencyProvider | None:
-    """Map ``--saliency`` choice to a provider instance (or ``None`` for off)."""
+    """Map a ``--saliency`` CLI choice to a provider instance.
+
+    Args:
+        name: Choice from the ``--saliency`` flag. Currently ``"none"`` or
+            ``"apple"``; argparse ``choices`` enforces this upstream.
+
+    Returns:
+        ``None`` for ``"none"`` (the sampler skips the saliency call
+        entirely); a fresh :class:`AppleVisionSaliencyProvider` for
+        ``"apple"``.
+
+    Raises:
+        RuntimeError: If ``"apple"`` is requested off-Darwin or without
+            ``pyobjc-framework-Vision`` installed (propagated from the
+            provider's constructor).
+        ValueError: If ``name`` is not one of the known choices (defensive
+            check; argparse normally prevents this).
+    """
     if name == "none":
         return None
     if name == "apple":
@@ -199,6 +256,16 @@ def _build_saliency_provider(name: str) -> SaliencyProvider | None:
 
 
 def _extract_command(args: argparse.Namespace) -> int:
+    """Run the ``extract`` subcommand and return its exit code.
+
+    Args:
+        args: Parsed argparse namespace from the ``extract`` subparser.
+
+    Returns:
+        ``EXIT_OK`` on success, ``EXIT_INPUT_ERROR`` for bad JSON / unknown
+        config field / unsupported saliency, ``EXIT_EXTRACTION_ERROR`` for
+        decode/encode failures.
+    """
     try:
         shots = _parse_shot_json(args.shots)
         config = _parse_config_json(args.config)
@@ -211,7 +278,10 @@ def _extract_command(args: argparse.Namespace) -> int:
         with VideoDecoder.open(args.video, target_size=config.target_size) as decoder:
             keyframes = extract_all(shots, decoder, config, saliency_provider=saliency)
         manifest_path = _write_outputs(args.video, args.output, keyframes)
-    except Exception as exc:
+    except (av.error.FFmpegError, OSError, ValueError, RuntimeError) as exc:
+        # Programmer bugs (TypeError, AttributeError, etc.) deliberately
+        # propagate as crashes so they surface in tracebacks instead of
+        # being mapped to the extraction-error exit code.
         print(f"error: extraction failed: {exc}", file=sys.stderr)
         return EXIT_EXTRACTION_ERROR
 

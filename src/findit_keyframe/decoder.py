@@ -73,8 +73,18 @@ class DecodedFrame:
 def pick_strategy(shots: list[ShotRange], duration_sec: float) -> Strategy:
     """Choose ``Sequential`` for dense or numerous shots, ``PerShotSeek`` otherwise.
 
-    Returns ``PerShotSeek`` for empty shot lists and unknown durations
-    (``duration_sec <= 0``) so callers don't have to special-case those paths.
+    Empty shot lists and unknown durations (``duration_sec <= 0``) collapse to
+    ``PerShotSeek`` so callers don't have to special-case those paths.
+
+    Args:
+        shots: Shot list whose density is being measured.
+        duration_sec: Total video duration in seconds.
+
+    Returns:
+        ``Strategy.Sequential`` if ``len(shots) / duration_sec > 0.3`` or
+        ``len(shots) > 200`` (the count short-circuit catches very long
+        videos with many cuts where density alone would be misleading);
+        ``Strategy.PerShotSeek`` otherwise.
     """
     if not shots or duration_sec <= 0.0:
         return Strategy.PerShotSeek
@@ -119,6 +129,28 @@ class VideoDecoder:
 
     @classmethod
     def open(cls, path: Path, target_size: int = 0) -> Self:
+        """Open a video file for decoding.
+
+        The container is held open until :meth:`close` is called or the
+        instance leaves a ``with`` block. If stream selection fails the
+        container is closed before re-raising.
+
+        Args:
+            path: Filesystem path to a video container readable by FFmpeg.
+            target_size: Square output edge length in pixels for decoded
+                frames. Pass ``0`` (the default) to keep native resolution;
+                any positive value triggers ``swscale`` resize on every
+                decode.
+
+        Returns:
+            A ready-to-use :class:`VideoDecoder` positioned at the start
+            of the first video stream.
+
+        Raises:
+            av.error.FFmpegError: If FFmpeg cannot open or probe the file
+                (missing file, unknown format, corrupted header, ...).
+            IndexError: If the container has no video stream.
+        """
         container = av.open(str(path))
         try:
             stream = container.streams.video[0]
@@ -130,25 +162,31 @@ class VideoDecoder:
 
     @property
     def duration_sec(self) -> float:
+        """Stream duration in seconds, or ``0.0`` if FFmpeg reports unknown."""
         return self._duration_sec
 
     @property
     def fps(self) -> float:
+        """Average frame rate in frames per second, or ``0.0`` when unknown."""
         return self._fps
 
     @property
     def timebase(self) -> Timebase:
+        """The stream's PTS timebase, suitable for building :class:`Timestamp`."""
         return self._timebase
 
     @property
     def width(self) -> int:
+        """Output frame width in pixels (after ``target_size`` resize, if any)."""
         return self._target_size if self._target_size else self._native_width
 
     @property
     def height(self) -> int:
+        """Output frame height in pixels (after ``target_size`` resize, if any)."""
         return self._target_size if self._target_size else self._native_height
 
     def close(self) -> None:
+        """Release the underlying FFmpeg container. Idempotent in practice."""
         self._container.close()
 
     def __enter__(self) -> Self:
@@ -193,6 +231,21 @@ class VideoDecoder:
         Implementation: seek backward to the keyframe at-or-before the target,
         then decode forward until the first frame with ``pts >= target_pts``.
         Resolves to within ±1 frame of the requested time.
+
+        Args:
+            time_sec: Wall-clock seek target in seconds. May exceed
+                :attr:`duration_sec`; in that case no frame is found and
+                ``ValueError`` is raised.
+
+        Returns:
+            The first decoded frame whose PTS is at or after the target,
+            already converted to packed RGB24 at the configured size.
+
+        Raises:
+            ValueError: If decoding consumes the rest of the stream without
+                finding a frame at or after the target (typically because
+                ``time_sec`` is past end-of-stream).
+            av.error.FFmpegError: If the container raises a decode error.
         """
         target_pts = round(time_sec * self._timebase.den / self._timebase.num)
         self._container.seek(target_pts, stream=self._stream, any_frame=False)
@@ -213,9 +266,22 @@ class VideoDecoder:
     ) -> Iterator[tuple[int, DecodedFrame]]:
         """Single-pass scan; yield ``(shot_id, frame)`` for frames inside any shot.
 
-        ``shot_id`` is the original index into ``shots`` (preserved when the
-        input list is unsorted). Shots are assumed non-overlapping; behaviour
-        with overlapping ranges is unspecified.
+        Internally sorts shots by start time so the cursor only moves
+        forward, but the yielded ``shot_id`` is the *original* index into
+        ``shots`` so callers can correlate with their unsorted input.
+
+        Args:
+            shots: List of shots to cover. Empty input yields nothing.
+                Shots are assumed non-overlapping; behaviour with
+                overlapping ranges is unspecified.
+
+        Yields:
+            ``(shot_id, frame)`` pairs in PTS order. Frames whose PTS
+            falls in the gap between consecutive shots are skipped.
+
+        Raises:
+            av.error.FFmpegError: If the container raises a decode error
+                during the linear pass.
         """
         if not shots:
             return

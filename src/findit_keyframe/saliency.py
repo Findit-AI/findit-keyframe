@@ -57,6 +57,13 @@ class AppleVisionSaliencyProvider:
     """
 
     def __init__(self) -> None:
+        """Construct an Apple Vision saliency provider.
+
+        Raises:
+            RuntimeError: If the host is not macOS, or if
+                ``pyobjc-framework-Vision`` and ``pyobjc-framework-Quartz``
+                are not importable (install via the ``[macos]`` extra).
+        """
         if platform.system() != "Darwin":
             raise RuntimeError("AppleVisionSaliencyProvider requires macOS")
         try:
@@ -88,6 +95,23 @@ class AppleVisionSaliencyProvider:
         self._VNHandler = VNImageRequestHandler
 
     def _rgb_to_cgimage(self, rgb: npt.NDArray[np.uint8]) -> Any:
+        """Wrap a packed RGB24 ndarray as a Core Graphics ``CGImage``.
+
+        Quartz requires 32-bit aligned bitmap formats, so the buffer is
+        padded RGB → RGBX with the alpha channel marked as ignored
+        (``kCGImageAlphaNoneSkipLast``).
+
+        Args:
+            rgb: Array of shape ``(H, W, 3)`` and dtype ``uint8``.
+
+        Returns:
+            An opaque ``CGImage`` reference suitable for
+            ``VNImageRequestHandler.initWithCGImage_options_``.
+
+        Raises:
+            ValueError: If ``rgb`` is not ``uint8`` or its shape is not
+                ``(H, W, 3)``.
+        """
         import numpy as np
 
         if rgb.dtype != np.uint8 or rgb.ndim != 3 or rgb.shape[2] != 3:
@@ -117,6 +141,26 @@ class AppleVisionSaliencyProvider:
         )
 
     def compute(self, rgb: npt.NDArray[np.uint8]) -> float:
+        """Run an Apple Vision attention saliency request and return its scalar.
+
+        Each ``VNRectangleObservation`` returned by the request carries a
+        normalised ``boundingBox`` (in ``[0, 1]`` image coordinates) and a
+        ``confidence`` in ``[0, 1]``. The provider sums ``area *
+        confidence`` over all such observations and clamps to ``[0, 1]``.
+        Vision request failure (rare) collapses to ``0.0`` rather than
+        raising, so a single bad frame doesn't abort a whole shot.
+
+        Args:
+            rgb: Array of shape ``(H, W, 3)`` and dtype ``uint8``.
+
+        Returns:
+            Saliency mass in ``[0.0, 1.0]``. Higher means more
+            attention-grabbing.
+
+        Raises:
+            ValueError: If ``rgb`` has the wrong dtype or shape (propagated
+                from :meth:`_rgb_to_cgimage`).
+        """
         cg_image = self._rgb_to_cgimage(rgb)
         request = self._VNRequest.alloc().init()
         handler = self._VNHandler.alloc().initWithCGImage_options_(cg_image, {})
@@ -128,9 +172,6 @@ class AppleVisionSaliencyProvider:
             return 0.0
         observation = results[0]
         salient_objects = observation.salientObjects() or []
-        # Each VNRectangleObservation carries a normalised boundingBox (in
-        # [0, 1] image coordinates) and a confidence in [0, 1]. Sum
-        # area * confidence and clamp.
         total = 0.0
         for obj in salient_objects:
             box = obj.boundingBox()
@@ -143,8 +184,10 @@ class AppleVisionSaliencyProvider:
 def default_saliency_provider() -> SaliencyProvider:
     """Return the best provider available on the current platform.
 
-    Apple Vision on macOS when the ``[macos]`` extra is installed; ``Noop``
-    otherwise (including macOS without pyobjc-Vision).
+    Returns:
+        :class:`AppleVisionSaliencyProvider` on macOS when
+        ``pyobjc-framework-Vision`` is importable; :class:`NoopSaliencyProvider`
+        otherwise (including macOS hosts without the ``[macos]`` extra).
     """
     if platform.system() == "Darwin":
         try:
