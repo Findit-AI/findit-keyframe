@@ -286,8 +286,11 @@ def _extract_command(args: argparse.Namespace) -> int:
         return EXIT_EXTRACTION_ERROR
 
     n_keyframes = sum(len(s) for s in keyframes)
-    print(f"wrote {n_keyframes} keyframes to {args.output}")
-    print(f"manifest: {manifest_path}")
+    # Status messages go to stderr so stdout stays available for any future
+    # machine-readable output (the manifest path is already written to disk
+    # and discoverable at args.output / "manifest.json").
+    print(f"wrote {n_keyframes} keyframes to {args.output}", file=sys.stderr)
+    print(f"manifest: {manifest_path}", file=sys.stderr)
     return EXIT_OK
 
 

@@ -128,5 +128,5 @@ A `SaliencyProvider` exposes a single method `compute(rgb: ndarray) -> float` re
 
 - **VFR (variable frame rate)**: PTS handling is correct, but quality scores compare across temporally-uneven samples. Not a defect for our shot lengths.
 - **Decoder ±1 frame jitter**: requested timestamp may resolve to nearest I/P frame.
-- **Shot-spanning duplicates**: identical anchor-shot keyframes across consecutive shots are not deduplicated. See `TASKS.md` §7 for the MMR-based deduplication path planned for P3+ (Rust phase).
+- **Shot-spanning duplicates**: identical anchor-shot keyframes across consecutive shots are not deduplicated. `TASKS.md` §7 ("Out-of-Scope but Noted for Later") tracks the MMR cross-bin deduplication path alongside four other deferred items (SigLIP medoid selection, cross-shot coherence, learned quality models, hardware decode); all are tagged P2+ for the Rust phase.
 - **Sequential decode strategy**: `pick_strategy` returns `Sequential` for dense shot lists, but the current implementation always uses `PerShotSeek`. The Sequential optimisation lands in P3+ (Rust phase).
