@@ -1,0 +1,219 @@
+{
+  "version": 1,
+  "purpose": "Bit-precision regression contract for compute_quality. Generator semantics live in tests/test_quality_golden.py::_build_frame and the Rust port replays this fixture against its own implementation.",
+  "tolerance": 1e-06,
+  "frames": [
+    {
+      "id": "solid_black",
+      "spec": {
+        "kind": "solid",
+        "rgb": [
+          0,
+          0,
+          0
+        ],
+        "size": [
+          32,
+          32
+        ]
+      },
+      "expected": {
+        "laplacian_var": 0.0,
+        "mean_luma": 0.062745,
+        "luma_variance": 0.0,
+        "entropy": 0.0,
+        "saliency_mass": 0.0
+      }
+    },
+    {
+      "id": "solid_white",
+      "spec": {
+        "kind": "solid",
+        "rgb": [
+          255,
+          255,
+          255
+        ],
+        "size": [
+          32,
+          32
+        ]
+      },
+      "expected": {
+        "laplacian_var": 0.0,
+        "mean_luma": 0.921569,
+        "luma_variance": 0.0,
+        "entropy": 0.0,
+        "saliency_mass": 0.0
+      }
+    },
+    {
+      "id": "solid_gray_128",
+      "spec": {
+        "kind": "solid",
+        "rgb": [
+          128,
+          128,
+          128
+        ],
+        "size": [
+          32,
+          32
+        ]
+      },
+      "expected": {
+        "laplacian_var": 0.0,
+        "mean_luma": 0.494118,
+        "luma_variance": 0.0,
+        "entropy": 0.0,
+        "saliency_mass": 0.0
+      }
+    },
+    {
+      "id": "channel_red",
+      "spec": {
+        "kind": "channel",
+        "channel": "r",
+        "value": 255,
+        "size": [
+          32,
+          32
+        ]
+      },
+      "expected": {
+        "laplacian_var": 0.0,
+        "mean_luma": 0.321569,
+        "luma_variance": 0.0,
+        "entropy": 0.0,
+        "saliency_mass": 0.0
+      }
+    },
+    {
+      "id": "channel_green",
+      "spec": {
+        "kind": "channel",
+        "channel": "g",
+        "value": 255,
+        "size": [
+          32,
+          32
+        ]
+      },
+      "expected": {
+        "laplacian_var": 0.0,
+        "mean_luma": 0.564706,
+        "luma_variance": 0.0,
+        "entropy": 0.0,
+        "saliency_mass": 0.0
+      }
+    },
+    {
+      "id": "channel_blue",
+      "spec": {
+        "kind": "channel",
+        "channel": "b",
+        "value": 255,
+        "size": [
+          32,
+          32
+        ]
+      },
+      "expected": {
+        "laplacian_var": 0.0,
+        "mean_luma": 0.160784,
+        "luma_variance": 0.0,
+        "entropy": 0.0,
+        "saliency_mass": 0.0
+      }
+    },
+    {
+      "id": "h_gradient_0_255_64w",
+      "spec": {
+        "kind": "h_gradient",
+        "low": 0,
+        "high": 255,
+        "size": [
+          32,
+          64
+        ]
+      },
+      "expected": {
+        "laplacian_var": 0.82232,
+        "mean_luma": 0.490809,
+        "luma_variance": 4122.300928,
+        "entropy": 6.0,
+        "saliency_mass": 0.0
+      }
+    },
+    {
+      "id": "v_gradient_0_255_64h",
+      "spec": {
+        "kind": "v_gradient",
+        "low": 0,
+        "high": 255,
+        "size": [
+          64,
+          32
+        ]
+      },
+      "expected": {
+        "laplacian_var": 0.82232,
+        "mean_luma": 0.490809,
+        "luma_variance": 4122.300928,
+        "entropy": 6.0,
+        "saliency_mass": 0.0
+      }
+    },
+    {
+      "id": "checker_8px_0_255",
+      "spec": {
+        "kind": "checker",
+        "cell": 8,
+        "low": 0,
+        "high": 255,
+        "size": [
+          32,
+          32
+        ]
+      },
+      "expected": {
+        "laplacian_var": 23021.28,
+        "mean_luma": 0.492157,
+        "luma_variance": 12001.970674,
+        "entropy": 1.0,
+        "saliency_mass": 0.0
+      }
+    },
+    {
+      "id": "single_pixel_100_in_5x5",
+      "spec": {
+        "kind": "single_pixel",
+        "bg": [
+          0,
+          0,
+          0
+        ],
+        "fg": [
+          100,
+          100,
+          100
+        ],
+        "position": [
+          2,
+          2
+        ],
+        "size": [
+          5,
+          5
+        ]
+      },
+      "expected": {
+        "laplacian_var": 16435.555556,
+        "mean_luma": 0.076235,
+        "luma_variance": 295.84,
+        "entropy": 0.242292,
+        "saliency_mass": 0.0
+      }
+    }
+  ]
+}
