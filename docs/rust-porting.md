@@ -83,6 +83,7 @@ JSON / image fixtures under `tests/fixtures/` (where present) are the **shared g
 |-------------|--------------------|-------|
 | `tests/test_types.py` | `tests/types_*.rs` | Hand-derived numeric expectations; replay verbatim. |
 | `tests/test_quality.py` | `tests/quality_*.rs` | All numeric assertions are derived in test docstrings; replay verbatim. |
+| `tests/test_quality_golden.py` + `tests/fixtures/quality/canonical.json` | `tests/quality_golden.rs` | **Bit-precision contract.** Implement the six generators (solid / channel / h_gradient / v_gradient / checker / single_pixel — exact integer-arithmetic semantics in `_build_frame`'s docstring), load the JSON, assert each metric matches expected to 6 decimals (`tolerance = 1e-6`). |
 | `tests/test_decoder.py` | `tests/decoder_*.rs` | Tiny test video encoded inside `conftest.py`; reproduce with the same encoder settings. |
 | `tests/test_sampler.py` | `tests/sampler_*.rs` | Pure-function tests + integration on `varied_video` (per-frame mid-tone noise; reproduce). |
 | `tests/test_cli.py` | `tests/cli_*.rs` | Manifest schema and exit codes are the contract. |

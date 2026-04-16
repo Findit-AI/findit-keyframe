@@ -128,6 +128,11 @@ def entropy(luma: LumaArray, bins: int = 256) -> float:
         return 0.0
     p = counts.astype(np.float64) / float(total)
     p_nz = p[p > 0]
+    if p_nz.size <= 1:
+        # Delta distribution: H = -1 * log2(1) = 0.0 mathematically, but the
+        # naive expression evaluates to -0.0 in IEEE-754. Short-circuit so
+        # the returned float is bit-clean and the JSON snapshot stays tidy.
+        return 0.0
     return float(-np.sum(p_nz * np.log2(p_nz)))
 
 
