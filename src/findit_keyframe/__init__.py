@@ -1,12 +1,20 @@
 """findit-keyframe: per-shot keyframe extraction with stratified temporal sampling.
 
-Public API surface re-exports the user-facing types and (once implemented)
-top-level functions. Internal helpers live in their respective modules and
-are not part of the stable API.
+Public API surface re-exports the user-facing types and top-level functions.
+Internal helpers live in their respective modules and are not part of the
+stable API.
 """
 
 from __future__ import annotations
 
+from findit_keyframe.decoder import (
+    DecodedFrame,
+    Strategy,
+    VideoDecoder,
+    pick_strategy,
+)
+from findit_keyframe.quality import QualityGate, compute_quality
+from findit_keyframe.sampler import extract_all, extract_for_shot
 from findit_keyframe.types import (
     Confidence,
     ExtractedKeyframe,
@@ -21,11 +29,19 @@ __version__ = "0.0.0"
 
 __all__ = [
     "Confidence",
+    "DecodedFrame",
     "ExtractedKeyframe",
+    "QualityGate",
     "QualityMetrics",
     "SamplingConfig",
     "ShotRange",
+    "Strategy",
     "Timebase",
     "Timestamp",
+    "VideoDecoder",
     "__version__",
+    "compute_quality",
+    "extract_all",
+    "extract_for_shot",
+    "pick_strategy",
 ]
