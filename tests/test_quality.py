@@ -148,6 +148,21 @@ def test_rgb_to_luma_pure_green_weight() -> None:
 # ---------- score_frame -------------------------------------------------------
 
 
+# Default thresholds mirroring Config defaults — kept local so the tests
+# don't depend on Config evolving.
+_BLACK_TH = 15.0
+_BRIGHT_TH = 240.0
+_LUMA_VAR_TH = 5.0
+_SAT_VAR_TH = 3.0
+_MAX_CLIPPING = 0.50
+
+
+def _is_unusable(score) -> bool:  # type: ignore[no-untyped-def]
+    return score.is_unusable(
+        _BLACK_TH, _BRIGHT_TH, _LUMA_VAR_TH, _SAT_VAR_TH, _MAX_CLIPPING
+    )
+
+
 def test_score_frame_on_sharp_image() -> None:
     """A checker-pattern RGB image scores above the default min_sharpness (100)."""
     rgb = np.zeros((240, 240, 3), dtype=np.uint8)
@@ -157,7 +172,8 @@ def test_score_frame_on_sharp_image() -> None:
     assert score.sharpness > 100.0
     # Sanity checks on auxiliary fields.
     assert 0.0 <= score.brightness <= 255.0
-    assert score.variance > 0.0
+    assert score.luma_variance > 0.0
+    assert 0.0 <= score.clipping <= 1.0
 
 
 def test_score_frame_on_black_image() -> None:
@@ -165,20 +181,90 @@ def test_score_frame_on_black_image() -> None:
     score = score_frame(rgb)
     assert score.sharpness == pytest.approx(0.0, abs=1e-6)
     assert score.brightness == pytest.approx(0.0, abs=1e-6)
-    # FrameScore.is_unusable should catch this.
-    assert score.is_unusable(
-        black_threshold=15.0, bright_threshold=240.0, variance_threshold=5.0
-    )
+    # Clipping should also hit 1.0 (all pixels are max<5).
+    assert score.clipping == pytest.approx(1.0, abs=1e-6)
+    # Both the brightness gate and the clipping gate catch this.
+    assert _is_unusable(score)
 
 
 def test_score_frame_on_flat_gray_image() -> None:
     rgb = np.full((240, 240, 3), 128, dtype=np.uint8)
     score = score_frame(rgb)
     assert score.brightness == pytest.approx(128.0, abs=1.0)
-    assert score.variance == pytest.approx(0.0, abs=1e-6)
-    assert score.is_unusable(
-        black_threshold=15.0, bright_threshold=240.0, variance_threshold=5.0
-    )
+    assert score.luma_variance == pytest.approx(0.0, abs=1e-6)
+    assert score.sat_variance == pytest.approx(0.0, abs=1e-6)
+    # Both luma AND saturation variance are zero → truly flat.
+    assert _is_unusable(score)
+
+
+def test_equiluminant_multi_color_is_NOT_flagged_flat() -> None:
+    """A frame with two equiluminant patches of different color must survive.
+
+    Left half saturated red ``(255, 0, 0)``: Y≈76, S=255.
+    Right half gray ``(76, 76, 76)``: Y=76, S=0.
+
+    Luma variance is effectively zero (both halves at Y=76), but saturation
+    varies dramatically (255 vs 0). The AND'd flat check should keep this
+    frame — a luma-only detector would wrongly reject it.
+    """
+    rgb = np.zeros((240, 240, 3), dtype=np.uint8)
+    rgb[:, :120] = (255, 0, 0)        # saturated red, Y≈76, S=255
+    rgb[:, 120:] = (76, 76, 76)        # gray, Y=76, S=0
+    score = score_frame(rgb)
+    # Luma variance should be tiny — this is the equiluminant trap.
+    assert score.luma_variance < 20.0
+    # Saturation variance should be large (fully saturated vs unsaturated).
+    assert score.sat_variance > 1000.0
+    # Because AND'd together, the frame must NOT be marked unusable.
+    assert not _is_unusable(score)
+
+
+def test_blown_highlight_is_flagged_via_clipping() -> None:
+    """Frame with a large blown-out region triggers the clipping gate.
+
+    The overall luma mean sits inside ``[black, bright]``, so the legacy
+    mean-only check would NOT reject this. Clipping does.
+    """
+    # 240x240 frame with 60% of area blown to pure white — past the
+    # default max_clipping=0.50 gate.
+    rgb = np.full((240, 240, 3), 90, dtype=np.uint8)
+    rgb[:, 96:, :] = 255  # right 60% = 144/240 columns blown white
+    score = score_frame(rgb)
+    # Mean luma sits inside the [15, 240] legal range.
+    assert 15 < score.brightness < 240
+    # Clipping exceeds the default gate.
+    assert score.clipping > 0.50
+    assert _is_unusable(score)
+
+
+def test_high_contrast_scene_survives_clipping_gate() -> None:
+    """A normal high-contrast scene (small bright area) should not be rejected."""
+    rgb = np.full((240, 240, 3), 120, dtype=np.uint8)
+    # Only 10% of frame is "bright sky".
+    rgb[:24, :, :] = 252
+    score = score_frame(rgb)
+    # < 50% clipped at default.
+    assert score.clipping < 0.20
+    assert not _is_unusable(score)
+
+
+def test_clipping_ratio_is_symmetric() -> None:
+    """Both blown highlights and crushed shadows count as clipping."""
+    from findit_keyframe.quality import clipping_ratio
+
+    mid = np.full((100, 100, 3), 128, dtype=np.uint8)
+    assert clipping_ratio(mid) == pytest.approx(0.0, abs=1e-6)
+
+    blown = np.full((100, 100, 3), 255, dtype=np.uint8)
+    assert clipping_ratio(blown) == pytest.approx(1.0, abs=1e-6)
+
+    crushed = np.full((100, 100, 3), 0, dtype=np.uint8)
+    assert clipping_ratio(crushed) == pytest.approx(1.0, abs=1e-6)
+
+    # Half and half should be ~0.5 regardless of direction.
+    mixed = np.full((100, 100, 3), 128, dtype=np.uint8)
+    mixed[:, :50] = 0
+    assert clipping_ratio(mixed) == pytest.approx(0.5, abs=1e-3)
 
 
 # ---------- downscale_for_quality ---------------------------------------------

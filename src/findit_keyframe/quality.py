@@ -3,28 +3,29 @@
 Why the design looks the way it does
 ------------------------------------
 
-A candidate frame is scored for exactly three things:
+Each candidate frame is scored for five things:
 
-1. Sharpness (Tenengrad = mean of squared Sobel gradients)
-2. Brightness (luma mean)
-3. Variance (luma variance — solid-color detector)
+* **Sharpness** — Tenengrad (mean of squared 3×3 Sobel gradients) on luma.
+* **Brightness** — mean luma.
+* **Luma variance** — for base "solid color" detection.
+* **Saturation variance** — catches equiluminant multi-color frames that the
+  luma variance alone would mislabel as flat.
+* **Clipping ratio** — fraction of pixels where ``max(R, G, B)`` is below 5
+  or above 250. Catches blown highlights and crushed shadows that the luma
+  mean alone misses (e.g. a frame with a blown-out sky occupying 40 % of
+  the area but a moderate overall luma mean).
 
-Naive implementation computes each on the full-resolution RGB frame and
-pays twice for the brightness/variance because the filter step and the
-reporting step both need them. This module solves that with two moves:
+Design pillars:
 
-* **Downsample to a fixed small square before scoring.** Quality metrics
-  are scale-invariant for the purpose of *ranking candidates within a
-  bucket* — the sharpest 1080p frame is still the sharpest at 384 px. A
-  5× linear downscale delivers ~25× less compute for Sobel and stats.
-
-* **Single-pass ``score_frame``.** All three metrics come out of one call,
-  bound into a frozen ``FrameScore`` dataclass. The filter step consumes
-  the struct and does not recompute anything.
-
-The output [`Keyframe`](types.py) still carries the original full-resolution
-PIL image — we only downscale for the *scoring* temporary, never the
-artefact we hand downstream.
+1. **Single pass.** All five metrics come out of one call, bound into a
+   frozen :class:`FrameScore`. No downstream consumer re-computes anything.
+2. **Downscale first.** Quality metrics are evaluated on a
+   :data:`QUALITY_TARGET_DIM`-px longest-side shrink. Scale-invariant for
+   *ranking* within a bucket. Dominant speedup: ~25× fewer pixels at 1080p.
+3. **Hot operations on the right representation.** Sharpness on luma
+   (HVS-aligned), clipping on RGB (caught by the channel max, not the
+   weighted luma), saturation variance on HSV (the one real edge case
+   luma variance misses).
 """
 
 from __future__ import annotations
@@ -42,6 +43,11 @@ import numpy.typing as npt
 #: resolution downstream sees.
 QUALITY_TARGET_DIM: int = 384
 
+#: Pixel value threshold below which a pixel is considered "crushed shadow".
+_CLIP_LOW: int = 5
+#: Pixel value threshold above which a pixel is considered "blown highlight".
+_CLIP_HIGH: int = 250
+
 #: Sobel kernel size used by Tenengrad. 3 is the OpenCV fast path.
 _SOBEL_KSIZE: int = 3
 
@@ -58,34 +64,57 @@ class FrameScore:
     """All quality metrics for a single frame, computed in a single pass.
 
     Attributes:
-        sharpness: Tenengrad mean of squared Sobel gradients. Higher is sharper.
-            Absolute scale depends on resolution of the scoring luma plane —
-            this library always scores at :data:`QUALITY_TARGET_DIM`, so values
-            are directly comparable across frames and shots.
+        sharpness: Tenengrad (mean of squared 3×3 Sobel gradients) on luma.
+            Scored at :data:`QUALITY_TARGET_DIM` so values are directly
+            comparable across frames.
         brightness: Mean luma in 0–255 space.
-        variance: Luma variance. Used to flag solid-color / flat frames.
+        luma_variance: Variance of the luma plane.
+        sat_variance: Variance of the HSV saturation plane. Used in
+            conjunction with :attr:`luma_variance` to detect truly-flat
+            frames — only when **both** are low is the frame considered flat
+            (avoids flagging equiluminant multi-color frames).
+        clipping: Fraction of pixels where ``max(R, G, B)`` is clipped
+            (below :data:`_CLIP_LOW` or above :data:`_CLIP_HIGH`). Range
+            ``[0.0, 1.0]``.
     """
 
     sharpness: float
     brightness: float
-    variance: float
+    luma_variance: float
+    sat_variance: float
+    clipping: float
 
     def is_unusable(
         self,
         black_threshold: float,
         bright_threshold: float,
-        variance_threshold: float,
+        luma_variance_threshold: float,
+        sat_variance_threshold: float,
+        max_clipping: float,
     ) -> bool:
-        """True if the frame fails any hard quality gate.
+        """True if the frame should be rejected before ranking.
 
-        Fails when the frame is near-black, overexposed, or nearly a solid
-        color. Consumer of the score — never recomputes the metrics.
+        Hard gates (any one trips → unusable):
+
+        * Mean luma below ``black_threshold`` (near-black).
+        * Mean luma above ``bright_threshold`` (overexposed).
+        * **Both** luma and saturation variance below thresholds (truly flat —
+          not just equiluminant). This AND is intentional: a frame of solid
+          colors at the same luma level has ``luma_variance ≈ 0`` but
+          ``sat_variance > 0`` and should be kept.
+        * Clipping ratio above ``max_clipping`` (blown highlights / crushed
+          shadows on a large fraction of the frame).
         """
         if self.brightness < black_threshold:
             return True
         if self.brightness > bright_threshold:
             return True
-        return self.variance < variance_threshold
+        if (
+            self.luma_variance < luma_variance_threshold
+            and self.sat_variance < sat_variance_threshold
+        ):
+            return True
+        return self.clipping > max_clipping
 
 
 # ---- Primitive metrics (kept public for tests and advanced users) ------------
@@ -103,13 +132,34 @@ def tenengrad_sharpness(luma: LumaArray) -> float:
 
 
 def luma_stats(luma: LumaArray) -> tuple[float, float]:
-    """Return ``(mean, variance)`` of the luma plane in 0–255 space.
-
-    Uses ``float64`` intermediates so numerics stay stable on 4K+ frames.
-    """
+    """Return ``(mean, variance)`` of the luma plane in 0–255 space."""
     mean = float(np.mean(luma, dtype=np.float64))
     var = float(np.var(luma, dtype=np.float64))
     return mean, var
+
+
+def clipping_ratio(rgb: npt.NDArray[np.uint8]) -> float:
+    """Fraction of pixels where ``max(R, G, B)`` is clipped low or high.
+
+    Catches the two flavors of blown exposure the luma mean alone misses:
+
+    * Blown highlights: ``max(R, G, B) > 250`` — often a saturated colour
+      rather than pure white, so the luma mean may still be moderate.
+    * Crushed shadows: ``max(R, G, B) < 5`` — consistent "no signal in any
+      channel" regions.
+
+    Args:
+        rgb: HxWx3 uint8 RGB or BGR image (the max-per-channel is
+            byte-order-agnostic).
+
+    Returns:
+        Fraction in ``[0.0, 1.0]``. Note this is an *inclusive* count — a
+        single clipped pixel contributes proportionally.
+    """
+    max_channel = rgb.max(axis=2)
+    over = max_channel > _CLIP_HIGH
+    under = max_channel < _CLIP_LOW
+    return float((over | under).mean())
 
 
 # ---- Combined pipeline -------------------------------------------------------
@@ -121,10 +171,8 @@ def downscale_for_quality(
 ) -> npt.NDArray[np.uint8]:
     """Resize so the longest side equals ``target_dim``, preserving aspect ratio.
 
-    * Uses ``INTER_AREA`` — the correct interpolation for shrinking (averaging
-      the covered source pixels gives natural anti-aliasing).
-    * Returns the input unchanged when already small enough, avoiding an
-      unnecessary copy.
+    * Uses ``INTER_AREA`` — the correct interpolation for shrinking.
+    * Returns the input unchanged when already small enough.
     """
     h, w = image.shape[:2]
     longest = max(h, w)
@@ -137,27 +185,35 @@ def downscale_for_quality(
 
 
 def score_frame(rgb: npt.NDArray[np.uint8]) -> FrameScore:
-    """Compute all quality metrics for one RGB frame in a single pass.
+    """Compute all five quality metrics for one RGB frame in a single pass.
 
     Pipeline:
 
     1. Downscale the RGB frame so the longest side is ``QUALITY_TARGET_DIM``.
-       This is the dominant speedup — everything below runs on ~25× fewer
-       pixels at 1080p source.
-    2. Convert to luma via BT.601 (``cv2.cvtColor``).
-    3. Compute Tenengrad + mean + variance from the luma plane.
+       Every subsequent op runs on this cheaper copy.
+    2. Convert to luma (BT.601) and HSV via OpenCV.
+    3. Compute Tenengrad + luma mean/variance + saturation variance +
+       clipping ratio.
 
     Args:
         rgb: HxWx3 uint8 RGB image.
-
-    Returns:
-        A :class:`FrameScore` with every metric the selector needs.
     """
     small_rgb = downscale_for_quality(rgb)
     luma = cv2.cvtColor(small_rgb, cv2.COLOR_RGB2GRAY)
+    hsv = cv2.cvtColor(small_rgb, cv2.COLOR_RGB2HSV)
+
     sharp = tenengrad_sharpness(luma)
-    mean, var = luma_stats(luma)
-    return FrameScore(sharpness=sharp, brightness=mean, variance=var)
+    mean, luma_var = luma_stats(luma)
+    sat_var = float(np.var(hsv[:, :, 1], dtype=np.float64))
+    clip = clipping_ratio(small_rgb)
+
+    return FrameScore(
+        sharpness=sharp,
+        brightness=mean,
+        luma_variance=luma_var,
+        sat_variance=sat_var,
+        clipping=clip,
+    )
 
 
 # ---- Back-compat helpers used by tests ---------------------------------------
@@ -174,20 +230,25 @@ def is_unusable_frame(
     bright_threshold: float,
     variance_threshold: float,
 ) -> bool:
-    """Legacy convenience: scores a luma plane and runs the hard gate.
+    """Legacy luma-only unusable check.
 
-    Prefer :func:`score_frame` + :meth:`FrameScore.is_unusable` in new code —
-    this helper recomputes :func:`luma_stats` every call.
+    This helper predates the clipping and saturation-variance signals — it
+    only knows about luma mean and luma variance. New code should prefer
+    :func:`score_frame` + :meth:`FrameScore.is_unusable`.
     """
     mean, var = luma_stats(luma)
-    score = FrameScore(sharpness=0.0, brightness=mean, variance=var)
-    return score.is_unusable(black_threshold, bright_threshold, variance_threshold)
+    if mean < black_threshold:
+        return True
+    if mean > bright_threshold:
+        return True
+    return var < variance_threshold
 
 
 __all__ = [
     "QUALITY_TARGET_DIM",
     "FrameScore",
     "LumaArray",
+    "clipping_ratio",
     "downscale_for_quality",
     "is_unusable_frame",
     "luma_stats",

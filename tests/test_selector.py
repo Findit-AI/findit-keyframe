@@ -16,18 +16,24 @@ from findit_keyframe.types import Config, Shot
 def _make_rgb(sharpness_level: str, size: int = 64) -> np.ndarray:
     """Make an RGB image with a known approximate sharpness.
 
+    Fixtures deliberately sit inside the default quality gates (mid-grey
+    backgrounds, no 100% clipping) so the test exercises the *sharpness*
+    path rather than tripping black/bright/clipping filters.
+
     Arguments:
-        sharpness_level: 'sharp' (high Tenengrad), 'blurry' (low Tenengrad),
-            'black', 'bright', or 'flat'.
+        sharpness_level: ``'sharp'``, ``'blurry'``, ``'black'``, ``'bright'``,
+            or ``'flat'``.
     """
     if sharpness_level == "sharp":
-        # Hard vertical edge → high Sobel response.
-        img = np.zeros((size, size, 3), dtype=np.uint8)
-        img[:, size // 2 :, :] = 255
+        # Mid-grey background with a dense grid of darker/brighter lines —
+        # high Sobel response, no clipping, no flat gate.
+        img = np.full((size, size, 3), 128, dtype=np.uint8)
+        img[::4, :, :] = 200    # brighter horizontal lines every 4 rows
+        img[:, ::4, :] = 60     # darker vertical lines every 4 cols
         return img
     if sharpness_level == "blurry":
-        # Soft ramp 0→255 left-to-right → low gradients.
-        ramp = np.linspace(0, 255, size, dtype=np.uint8)
+        # Soft ramp confined to 60–200 — no clipping, low gradient density.
+        ramp = np.linspace(60, 200, size, dtype=np.uint8)
         img = np.broadcast_to(ramp, (size, size)).copy()
         return np.stack([img, img, img], axis=-1)
     if sharpness_level == "black":

@@ -89,7 +89,9 @@ def _select_from_bucket(
         if not score.is_unusable(
             config.black_mean_threshold,
             config.bright_mean_threshold,
-            config.variance_threshold,
+            config.luma_variance_threshold,
+            config.sat_variance_threshold,
+            config.max_clipping,
         )
         and score.sharpness >= config.min_sharpness
     ]

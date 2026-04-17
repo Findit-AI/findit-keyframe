@@ -115,7 +115,9 @@ def _select_with_stats(
             if not s.is_unusable(
                 config.black_mean_threshold,
                 config.bright_mean_threshold,
-                config.variance_threshold,
+                config.luma_variance_threshold,
+                config.sat_variance_threshold,
+                config.max_clipping,
             )
             and s.sharpness >= config.min_sharpness
         ]
