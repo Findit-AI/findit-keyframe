@@ -10,9 +10,13 @@ import numpy as np
 import pytest
 
 from findit_keyframe.quality import (
+    FrameScore,
+    QUALITY_TARGET_DIM,
+    downscale_for_quality,
     is_unusable_frame,
     luma_stats,
     rgb_to_luma,
+    score_frame,
     tenengrad_sharpness,
 )
 
@@ -139,3 +143,62 @@ def test_rgb_to_luma_pure_green_weight() -> None:
     luma = rgb_to_luma(rgb)
     # 0.587 * 255 ≈ 149. OpenCV's integer path lands on 150.
     assert 145 <= luma.mean() <= 155
+
+
+# ---------- score_frame -------------------------------------------------------
+
+
+def test_score_frame_on_sharp_image() -> None:
+    """A checker-pattern RGB image scores above the default min_sharpness (100)."""
+    rgb = np.zeros((240, 240, 3), dtype=np.uint8)
+    rgb[::16, :, :] = 255
+    rgb[:, ::16, :] = 255
+    score = score_frame(rgb)
+    assert score.sharpness > 100.0
+    # Sanity checks on auxiliary fields.
+    assert 0.0 <= score.brightness <= 255.0
+    assert score.variance > 0.0
+
+
+def test_score_frame_on_black_image() -> None:
+    rgb = np.zeros((240, 240, 3), dtype=np.uint8)
+    score = score_frame(rgb)
+    assert score.sharpness == pytest.approx(0.0, abs=1e-6)
+    assert score.brightness == pytest.approx(0.0, abs=1e-6)
+    # FrameScore.is_unusable should catch this.
+    assert score.is_unusable(
+        black_threshold=15.0, bright_threshold=240.0, variance_threshold=5.0
+    )
+
+
+def test_score_frame_on_flat_gray_image() -> None:
+    rgb = np.full((240, 240, 3), 128, dtype=np.uint8)
+    score = score_frame(rgb)
+    assert score.brightness == pytest.approx(128.0, abs=1.0)
+    assert score.variance == pytest.approx(0.0, abs=1e-6)
+    assert score.is_unusable(
+        black_threshold=15.0, bright_threshold=240.0, variance_threshold=5.0
+    )
+
+
+# ---------- downscale_for_quality ---------------------------------------------
+
+
+def test_downscale_small_input_unchanged() -> None:
+    """Images already at or below target_dim are returned as-is (no copy)."""
+    img = np.zeros((100, 200, 3), dtype=np.uint8)
+    out = downscale_for_quality(img, target_dim=QUALITY_TARGET_DIM)
+    # Longest side 200 < 384 → no-op; same object returned.
+    assert out is img
+
+
+def test_downscale_large_input_preserves_aspect_ratio() -> None:
+    # 1080x1920, longest side 1920 → scales to 384 on long side.
+    img = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    out = downscale_for_quality(img, target_dim=384)
+    h, w = out.shape[:2]
+    assert max(h, w) == 384
+    # Aspect ratio roughly preserved.
+    ratio_before = 1920 / 1080
+    ratio_after = w / h
+    assert abs(ratio_after - ratio_before) < 0.02

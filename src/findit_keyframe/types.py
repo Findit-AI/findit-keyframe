@@ -81,6 +81,17 @@ class Config:
             marginally slower.
         min_sharpness: Tenengrad threshold. Below → candidate rejected in main
             pass. Fallback path selects the best-scoring frame anyway.
+
+            Computed at :data:`quality.QUALITY_TARGET_DIM` (384 px longest
+            side), so this value is resolution-independent for the *input*
+            video but dependent on the internal scoring resolution. Empirical
+            calibration on 1080p real-world footage:
+
+                * ``< 100``: clearly blurry / motion-blurred
+                * ``100–500``: soft but usable
+                * ``500+``: sharp
+
+            Default ``100.0`` rejects only the unambiguously bad frames.
         black_mean_threshold: Y-plane mean below → reject as black frame.
         bright_mean_threshold: Y-plane mean above → reject as overexposed.
         variance_threshold: Y-plane variance below → reject as solid-color frame.
@@ -91,7 +102,7 @@ class Config:
     target_interval_sec: float = 4.0
     max_frames_per_shot: int = 16
     candidates_per_bucket: int = 6
-    min_sharpness: float = 50.0
+    min_sharpness: float = 100.0
     black_mean_threshold: float = 15.0
     bright_mean_threshold: float = 240.0
     variance_threshold: float = 5.0

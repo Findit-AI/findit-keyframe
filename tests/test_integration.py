@@ -65,8 +65,9 @@ def test_extract_single_shot(synthetic_video: Path) -> None:
         assert 0.0 <= kf.timestamp_sec <= 8.0
         # 320x240 expected (may differ slightly if container reports fallback).
         assert kf.image.size == (320, 240)
-        # testsrc2 is a high-frequency moving pattern → always sharp.
-        assert kf.sharpness > 50.0
+        # testsrc2 is a high-frequency moving pattern → always sharp well
+        # above the default min_sharpness (100 at internal 384px scale).
+        assert kf.sharpness > 100.0
 
 
 def test_extract_multiple_shots(synthetic_video: Path) -> None:
