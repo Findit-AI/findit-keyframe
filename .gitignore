@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.uv/
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.benchmarks/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Output artifacts (benchmarks, debug dumps)
+/output/
+/debug_dumps/
+*.jpg
+*.jpeg
+*.png
+!docs/**/*.jpg
+!docs/**/*.png
+
+# Project-specific
+/scratch/
